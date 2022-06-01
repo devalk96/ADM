@@ -24,8 +24,9 @@ def sign(activation):
     return 1 if activation > 0 else -1
 
 
-def tanh(a):
-    return (math.exp(a) - math.exp(-a)) / (math.exp(a) + math.exp(-a))
+def tanh(activation):
+    tan = math.tanh(activation)
+    return tan
 
 
 def mean_squared_error(yhat, y):
@@ -113,7 +114,7 @@ class Neuron:
     def single_predict(self, x):
         return self.predict([x])[0]
 
-    def partial_fit(self, xs, ys, alpha=0.001):
+    def partial_fit(self, xs, ys, alpha=0.0001):
         for x, y in zip(xs, ys):
             d_loss = derivative(self.loss)
             d_activation = derivative(self.activation)
@@ -124,7 +125,7 @@ class Neuron:
             self.bias = self.bias - (alpha * d_loss * d_y_hat)
             self.weights = [wi - (alpha * d_loss * d_y_hat * xi) for wi, xi in zip(self.weights, x)]
 
-    def fit(self, xs, ys, *, epochs=0, alpha=0.001, max_iter=2000):
+    def fit(self, xs, ys, *, epochs=0, alpha=0.1, max_iter=2000):
         if epochs != 0:
             for epoch in range(epochs):
                 self.partial_fit(xs, ys, alpha)
@@ -156,6 +157,8 @@ class Layer():
         self.outputs = outputs
         self.name = name
         self.next = next
+        self.prev_layer = None
+        self.curr_layer = self
 
     def __call__(self, xs):
         raise NotImplementedError('Abstract __call__ method')
@@ -170,6 +173,7 @@ class Layer():
         if self.next is None:
             self.next = next
             next.set_inputs(self.outputs)
+            next.set_prev_layer(self.curr_layer)
         else:
             self.next.add(next)
 
@@ -180,6 +184,9 @@ class Layer():
         limit = np.sqrt(6 / float(self.inputs + self.outputs))
         weights = np.random.uniform(low=-limit, high=limit, size=(self.outputs, self.inputs))
         self.weights = weights
+
+    def set_prev_layer(self, prev_layer):
+        self.prev_layer = prev_layer
 
     def __add__(self, next):
         result = deepcopy(self)
@@ -211,27 +218,33 @@ class InputLayer(Layer):
     def set_inputs(self, inputs):
         return NotImplementedError
 
-    def __call__(self, xs, ys=None):
-        return self.next(xs, ys)
+    def __call__(self, xs, *, ys=None, alpha=None):
+        return self.next(xs, ys=ys, alpha=alpha)
 
-    def predict(self, xs, ys=None):
-        yhats, ls = self(xs, ys)
-        if ys is not None:
-            return yhats, ls
-        return yhats
+    def predict(self, xs):
+        hs, _, _ = self(xs)
+        return hs
 
     def evaluate(self, xs, ys):
-        _, ls = self(xs, ys)
-        lmean = sum(ls) / len(ls)
-        return lmean
+        _, ls, _ = self(xs, ys=ys)
+        return sum(ls) / len(ls)
 
+    def partial_fit(self, xs, ys, alpha=0.1):
+        return self(xs, ys=ys, alpha=alpha)
+
+    def fit(self, xs, ys, alpha=0.1, epochs=None):
+        if not epochs:
+            for _ in range(100):
+                self.partial_fit(xs, ys, alpha=alpha)
+        else:
+            for _ in range(epochs):
+                self.partial_fit(xs, ys, alpha=alpha)
 
 
 class DenseLayer(Layer):
-
     def __init__(self, outputs, name=None):
         super().__init__(outputs, name)
-        self.bias = [random.randint(0, 0) for x in range(self.outputs)]
+        self.bias = [random.randint(0, 0) for _ in range(self.outputs)]
         self.weights = []
 
     def __repr__(self):
@@ -240,11 +253,49 @@ class DenseLayer(Layer):
             text += '+' + repr(self.next)
         return text
 
-    def __call__(self, xs, ys=None):
-        aa = [[pre_activation(x, w_o, b_o) for w_o, b_o in zip(self.weights, self.bias)] for x in
-              xs]
-        yhats, ls = self.next(aa, ys)
-        return yhats, ls
+    def __call__(self, xs, *, ys=None, alpha=None):
+
+        # Set initial weight and bias values
+        if self.bias is None and self.weights is None:
+            low = math.sqrt(6 / (self.inputs + self.outputs)) * -1
+            high = math.sqrt(6 / (self.inputs + self.outputs))
+
+            self.bias = [np.random.uniform(low, high)
+                         for _ in range(self.outputs)]
+
+            self.weights = [np.random.uniform(low, high,
+                                                 self.inputs).tolist()
+                            for _ in range(self.outputs)]
+
+        # Calculate pre-activation values
+        aa = [[pre_activation(x_n, w_o, b_o)
+               for w_o, b_o in zip(self.weights, self.bias)]
+              for x_n in xs]
+
+        # Loss over bias gradients per output per instance
+        hs, ls, df_la = self.next(aa, ys=ys, alpha=alpha)
+
+        # Predicting/Evaluating
+        if alpha is None:
+            return hs, ls, None
+
+        # Learning
+        alpha_n = alpha / len(xs)
+
+        # Loss over input gradients per output per instance
+        df_lx = [[sum([df_la_n[o] * self.weights[o][i]
+                       for o in range(self.outputs)]) for i in range(self.inputs)] for df_la_n in
+                 df_la]
+
+        # Adjust weights and bias
+        for df_la_n, x_n in zip(df_la, xs):
+            self.weights = [[w_oi - (alpha_n * df_la_no * x_ni) for w_oi, x_ni in zip(w_o, x_n)]
+                            for df_la_no, w_o in zip(df_la_n, self.weights)]
+
+            self.bias = [b_o - (alpha_n * df_la_no)
+                         for b_o, df_la_no in zip(self.bias, df_la_n)]
+
+        return hs, ls, df_lx
 
 
 class ActivationLayer(Layer):
@@ -261,14 +312,32 @@ class ActivationLayer(Layer):
             text += '+' + repr(self.next)
         return text
 
-    def __call__(self, aa, ys=None):
+    def __call__(self, aa, *, ys=None, alpha=None):
+        # Calculate predictions
         hs = [[self.activation(a_ni) for a_ni in a_n] for a_n in aa]
-        yhats, ls = self.next(hs, ys)
-        return yhats, ls
+
+        # Average loss over prediction gradients per instance
+        hs, ls, df_lh = self.next(hs, ys=ys, alpha=alpha)
+
+        # Predicting/Evaluating
+        if alpha is None:
+            return hs, ls, None
+
+        # Average prediction over pre-activation gradients per instance
+        df_activation = derivative(self.activation)
+        df_ha = [[df_activation(a_ni)
+                  for a_ni in a_n] for a_n in aa]
+
+        # Average loss over pre-activation gradients per instance
+        df_la = [[df_lh_ni * df_ha_ni
+                  for df_lh_ni, df_ha_ni in zip(df_lh_n, df_ha_n)]
+                 for df_lh_n, df_ha_n in zip(df_lh, df_ha)]
+
+        # Learning
+        return hs, ls, df_la
 
 
 class LossLayer(Layer):
-
     def __init__(self, loss=mean_squared_error, name=None):
         super().__init__(self, name)
         self.loss = loss
@@ -283,13 +352,27 @@ class LossLayer(Layer):
         text = f'LossLayer(inputs={self.inputs}, loss={self.loss.__name__}, name={repr(self.name)})'
         return text
 
-    def __call__(self, xs, ys=None, alpha=None):
-        yhats = xs
-        ls = None
-        gs = None
-        if ys is not None:
-            ls = [mean_squared_error(x[0], y[0]) for x, y in zip(yhats, ys)]
-            if alpha is not None:
-                gs = derivative()
 
-        return yhats, ls, gs
+    def __call__(self, hs, *, ys=None, alpha=None):
+
+        # Predicting
+        if ys is None:
+            return hs, None, None
+
+        # Average loss per instance
+        ls = [sum([self.loss(h_ni, y_ni)
+                   for h_ni, y_ni in zip(h_n, y_n)])
+              for h_n, y_n in zip(hs, ys)]
+
+        # Evaluating
+        if alpha is None:
+            return hs, ls, None
+
+        # Loss over prediction gradients per instance
+        df_loss = derivative(self.loss)
+        df_lh = [[df_loss(h_ni, y_ni)
+                  for h_ni, y_ni in zip(h_n, y_n)]
+                 for h_n, y_n in zip(hs, ys)]
+
+        # Learning
+        return hs, ls, df_lh
