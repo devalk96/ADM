@@ -220,6 +220,12 @@ class InputLayer(Layer):
             return yhats, ls
         return yhats
 
+    def evaluate(self, xs, ys):
+        _, ls = self(xs, ys)
+        lmean = sum(ls) / len(ls)
+        return lmean
+
+
 
 class DenseLayer(Layer):
 
@@ -235,7 +241,8 @@ class DenseLayer(Layer):
         return text
 
     def __call__(self, xs, ys=None):
-        aa = [[pre_activation(x, w_o, b_o) for w_o, b_o in zip(self.weights, self.bias)] for x in xs]
+        aa = [[pre_activation(x, w_o, b_o) for w_o, b_o in zip(self.weights, self.bias)] for x in
+              xs]
         yhats, ls = self.next(aa, ys)
         return yhats, ls
 
@@ -262,7 +269,6 @@ class ActivationLayer(Layer):
 
 class LossLayer(Layer):
 
-
     def __init__(self, loss=mean_squared_error, name=None):
         super().__init__(self, name)
         self.loss = loss
@@ -277,11 +283,13 @@ class LossLayer(Layer):
         text = f'LossLayer(inputs={self.inputs}, loss={self.loss.__name__}, name={repr(self.name)})'
         return text
 
-
-    def __call__(self, xs, ys=None):
+    def __call__(self, xs, ys=None, alpha=None):
         yhats = xs
         ls = None
+        gs = None
         if ys is not None:
-            print("YS is not none")
-            ls = [self.loss(y_cap, y) for y_cap, y in zip(xs, ys)]
-        return yhats, ls
+            ls = [mean_squared_error(x[0], y[0]) for x, y in zip(yhats, ys)]
+            if alpha is not None:
+                gs = derivative()
+
+        return yhats, ls, gs
