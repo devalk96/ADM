@@ -33,12 +33,49 @@ def tanh(activation):
     return tan
 
 
+def sigmoid(x):
+    if x >= 0:
+        z = math.exp(-x)
+        sig = 1 / (1 + z)
+        return sig
+    else:
+        z = math.exp(x)
+        sig = z / (1 + z)
+        return sig
+
+
+def softplus(x):
+    return math.log1p(math.exp(-abs(x))) + max(x, 0)
+
+
+def relu(x):
+    return x * (x > 0)
+
+
+def swish(x, beta=1):
+    return x * sigmoid(beta * x)
+
+
 def mean_squared_error(yhat, y):
     return (yhat - y) ** 2
 
 
 def mean_absolute_error(yhat, y):
     return math.fabs(yhat - y)
+
+
+def categorical_crossentropy(yhat, y):
+    return abs(y * pseudolog(yhat))
+
+
+def binary_crossentropy(yhat, y):
+    return abs(y * pseudolog(yhat)) - ((1 - y) * pseudolog(1 - yhat))
+
+
+def pseudolog(x, *, e=1e-6):
+    if x >= e:
+        return math.log(x)
+    return math.log(e) + ((x - e) / e)
 
 
 # Derivative
@@ -385,6 +422,7 @@ class SoftmaxLayer(Layer):
 
     def __init__(self, outputs, name=None):
         super().__init__(outputs, name)
+        self.soft = softsign
 
     def __repr__(self):
         text = (f'SoftmaxLayer(inputs={self.inputs}, outputs={self.outputs}, '
@@ -394,12 +432,24 @@ class SoftmaxLayer(Layer):
             text += '+' + repr(self.next)
         return text
 
-    def __call__(self, xs, ys=None, alpha=None):
+    def __call__(self, aa, ys=None, alpha=None):
         hh = []
-        for x in xs:
+        for x in aa:
             e_x = np.exp(x - np.max(x))
             res: np.ndarray = e_x / e_x.sum()
             hh.append(res.tolist())
-        yhats, ls, gs = self.next(hh, ys=None, alpha=None)
-        return yhats, ls, gs
 
+        hh, ls, df_lh = self.next(hh, ys=ys, alpha=alpha)
+
+        if alpha is None:
+            return hh, ls, None
+
+        df_soft = derivative(self.soft)
+        df_ha = [[df_soft(a_ni)
+                  for a_ni in a_n] for a_n in aa]
+
+        df_la = [[df_lh_ni * df_ha_ni
+                  for df_lh_ni, df_ha_ni in zip(df_lh_n, df_ha_n)]
+                 for df_lh_n, df_ha_n in zip(df_lh, df_ha)]
+
+        return hh, ls, df_la
