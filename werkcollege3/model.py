@@ -264,7 +264,7 @@ class DenseLayer(Layer):
                          for _ in range(self.outputs)]
 
             self.weights = [np.random.uniform(low, high,
-                                                 self.inputs).tolist()
+                                              self.inputs).tolist()
                             for _ in range(self.outputs)]
 
         # Calculate pre-activation values
@@ -351,7 +351,6 @@ class LossLayer(Layer):
     def __repr__(self):
         text = f'LossLayer(inputs={self.inputs}, loss={self.loss.__name__}, name={repr(self.name)})'
         return text
-
 
     def __call__(self, hs, *, ys=None, alpha=None):
 

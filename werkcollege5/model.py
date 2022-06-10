@@ -2,6 +2,8 @@ from collections import Counter
 from copy import deepcopy
 import random
 import math
+from itertools import chain
+
 import numpy as np
 
 
@@ -65,18 +67,17 @@ def mean_absolute_error(yhat, y):
 
 
 def categorical_crossentropy(yhat, y):
-    return -y * pseudolog(yhat)
+    return abs(y * pseudolog(yhat))
 
 
 def binary_crossentropy(yhat, y):
-    return -y * pseudolog(yhat) - ((1 - y) * pseudolog(1 - yhat))
+    return abs(y * pseudolog(yhat)) - ((1 - y) * pseudolog(1 - yhat))
 
 
 def pseudolog(x, *, e=1e-6):
     if x >= e:
         return math.log(x)
     return math.log(e) + ((x - e) / e)
-
 
 
 # Derivative
@@ -89,7 +90,28 @@ def derivative(function, delta=0.01):
     return wrapper_derivative
 
 
-class LinearRegression():
+def softmax_grads(s_n):
+    jacobian_m = []
+    length = len(s_n)
+
+    for i in range(length):
+        # New row for jacobian_m per i index
+        row = []
+
+        for j in range(length):
+            # Same value from vector
+            if (i == j):
+                row.append(s_n[i] * (1 - s_n[j]))
+            # Different value from vector
+            else:
+                row.append(-s_n[i] * s_n[j])
+
+        jacobian_m.append(row)
+
+    return jacobian_m
+
+
+class LinearRegression:
 
     def __init__(self, dim):
         self.dim = dim
@@ -131,7 +153,7 @@ class LinearRegression():
     def fit(self, xs, ys, *, alpha=0.001, epochs=1000):
         for i in range(0, epochs):
             predicted_value = self.predict(xs)
-            self.partial_fit(xs, ys)
+            self.partial_fit(xs, ys, alpha=alpha)
             if not self.check(ys, predicted_value):
                 break
 
@@ -185,7 +207,7 @@ class Neuron:
             if weights == self.weights and bias == self.bias:
                 training = False
             epoch_nr += 1
-        print(f"Total epochs: {epoch_nr}")
+        # print(f"Total epochs: {epoch_nr}")
 
 
 class Layer():
@@ -260,27 +282,53 @@ class InputLayer(Layer):
     def set_inputs(self, inputs):
         return NotImplementedError
 
-    def __call__(self, xs, *, ys=None, alpha=None):
-        return self.next(xs, ys=ys, alpha=alpha)
+    def __call__(self, xs, *, ys=None, alpha=None, epoch=None):
+        # print("Inputlayer called")
+        return self.next(xs, ys=ys, alpha=alpha, epoch=epoch)
 
     def predict(self, xs):
         hs, _, _ = self(xs)
         return hs
 
+    def partial_fit(self, xs, ys, *, alpha=0.1, batch_size=100):
+        batches = [(xs[i:i + batch_size], ys[i:i + batch_size]) for i in
+                   range(0, len(xs), batch_size)]
+
+        # Pair the outputs and chain into a single list
+        return [list(chain(*out)) for out in
+                zip(*[self(x, ys=y, alpha=alpha, ) for x, y in batches])]
+
+    def fit(self, xs, ys, *, alpha=0.1, epochs=100, validation_data=(None, None), batch_size=100,
+            decay=None):
+
+        history = {'loss': []} if validation_data == (None, None) else {'loss': [], 'val_loss': []}
+
+        for i in range(epochs):
+            # Progression feedback
+            if i % math.ceil((epochs / 5)) == 0:
+                print(f'{((i / epochs) * 100):.1f}%'.rjust(6, " "))
+            elif (i + 1) == epochs:
+                print('100.0%')
+
+            # Randomize order
+            temp = list(zip(xs, ys))
+            random.shuffle(temp)
+            xs, ys = zip(*temp)
+
+            # Decaying learning rate
+            if decay is not None:
+                alpha = alpha * math.exp(-decay * i)
+
+            _, ls, _ = self.partial_fit(xs, ys, alpha=alpha, batch_size=batch_size)
+
+            history['loss'].append(sum(ls) / len(ls))
+            if 'val_loss' in history: history['val_loss'].append(self.evaluate(*validation_data))
+
+        return history
+
     def evaluate(self, xs, ys):
         _, ls, _ = self(xs, ys=ys)
         return sum(ls) / len(ls)
-
-    def partial_fit(self, xs, ys, alpha=0.1):
-        return self(xs, ys=ys, alpha=alpha)
-
-    def fit(self, xs, ys, alpha=0.1, epochs=None):
-        if not epochs:
-            for _ in range(100):
-                self.partial_fit(xs, ys, alpha=alpha)
-        else:
-            for _ in range(epochs):
-                self.partial_fit(xs, ys, alpha=alpha)
 
 
 class DenseLayer(Layer):
@@ -295,8 +343,8 @@ class DenseLayer(Layer):
             text += '+' + repr(self.next)
         return text
 
-    def __call__(self, xs, *, ys=None, alpha=None):
-
+    def __call__(self, xs, *, ys=None, alpha=None, epoch=None):
+        # print("Denselayer called")
         # Set initial weight and bias values
         if self.bias is None and self.weights is None:
             low = math.sqrt(6 / (self.inputs + self.outputs)) * -1
@@ -315,7 +363,7 @@ class DenseLayer(Layer):
               for x_n in xs]
 
         # Loss over bias gradients per output per instance
-        hs, ls, df_la = self.next(aa, ys=ys, alpha=alpha)
+        hs, ls, df_la = self.next(aa, ys=ys, alpha=alpha, epoch=epoch)
 
         # Predicting/Evaluating
         if alpha is None:
@@ -354,12 +402,13 @@ class ActivationLayer(Layer):
             text += '+' + repr(self.next)
         return text
 
-    def __call__(self, aa, *, ys=None, alpha=None):
+    def __call__(self, aa, *, ys=None, alpha=None, epoch=None):
+        # print("Activationlayer called")
         # Calculate predictions
         hs = [[self.activation(a_ni) for a_ni in a_n] for a_n in aa]
 
         # Average loss over prediction gradients per instance
-        hs, ls, df_lh = self.next(hs, ys=ys, alpha=alpha)
+        hs, ls, df_lh = self.next(hs, ys=ys, alpha=alpha, epoch=epoch)
 
         # Predicting/Evaluating
         if alpha is None:
@@ -394,8 +443,8 @@ class LossLayer(Layer):
         text = f'LossLayer(inputs={self.inputs}, loss={self.loss.__name__}, name={repr(self.name)})'
         return text
 
-    def __call__(self, hs, *, ys=None, alpha=None):
-
+    def __call__(self, hs, *, ys=None, alpha=None, epoch=None):
+        # print("Loss layer called")
         # Predicting
         if ys is None:
             return hs, None, None
@@ -425,6 +474,9 @@ class SoftmaxLayer(Layer):
         super().__init__(outputs, name)
         self.soft = softsign
 
+        self.softmax_grads = softmax_grads
+
+
     def __repr__(self):
         text = (f'SoftmaxLayer(inputs={self.inputs}, outputs={self.outputs}, '
                 f',name={repr(self.name)})'
@@ -433,14 +485,15 @@ class SoftmaxLayer(Layer):
             text += '+' + repr(self.next)
         return text
 
-    def __call__(self, aa, ys=None, alpha=None):
+    def __call__(self, aa, *, ys=None, alpha=None, epoch=None):
+        # print("Softmaxlayer called")
         hh = []
         for x in aa:
             e_x = np.exp(x - np.max(x))
             res: np.ndarray = e_x / e_x.sum()
             hh.append(res.tolist())
 
-        hh, ls, df_lh = self.next(hh, ys=ys, alpha=alpha)
+        hh, ls, df_lh = self.next(hh, ys=ys, alpha=alpha, epoch=None)
 
         if alpha is None:
             return hh, ls, None
