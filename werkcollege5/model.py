@@ -476,7 +476,6 @@ class SoftmaxLayer(Layer):
 
         self.softmax_grads = softmax_grads
 
-
     def __repr__(self):
         text = (f'SoftmaxLayer(inputs={self.inputs}, outputs={self.outputs}, '
                 f',name={repr(self.name)})'
